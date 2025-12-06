@@ -1,0 +1,498 @@
+import React, { useState } from 'react';
+import { HexMap } from './components/HexMap';
+import { QuestModal } from './components/QuestModal';
+import { TeacherDashboard } from './components/TeacherDashboard';
+import { TitleScreen } from './components/TitleScreen';
+import { Territory, SquadId, GameState, ChatMessage, Question, Squad } from './types';
+import { INITIAL_TERRITORIES, SQUADS, MOCK_USER, INITIAL_CHAT } from './constants';
+import { generateQuestQuestions, generateCQCQuestions } from './services/geminiService';
+import { Shield, Star, Clock, Lock, Diamond, Map as MapIcon, Swords, GraduationCap, Gavel } from 'lucide-react';
+
+// Turn Order Definition
+const TURN_ORDER = [SquadId.ALPHA, SquadId.BRAVO, SquadId.CHARLIE];
+
+export default function App() {
+  const [gameState, setGameState] = useState<GameState>({
+    territories: INITIAL_TERRITORIES,
+    activeSquadId: SquadId.ALPHA, // Default, will be set by TitleScreen
+    gems: 0, 
+    currentView: 'TITLE',
+    selectedTerritoryId: null,
+    activeQuest: null,
+    customQuestions: {},
+    territoryQuestions: {}, // Cache for questions
+    squads: SQUADS
+  });
+
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>(INITIAL_CHAT);
+  const [loadingQuest, setLoadingQuest] = useState(false);
+
+  // Derived state
+  const selectedTerritory = gameState.territories.find(t => t.id === gameState.selectedTerritoryId);
+  const activeSquad = gameState.squads[gameState.activeSquadId];
+
+  const handleGameStart = (squadId: SquadId) => {
+    setGameState(prev => ({
+      ...prev,
+      activeSquadId: squadId,
+      currentView: 'MAP'
+    }));
+  };
+
+  const handleTerritoryClick = (id: string) => {
+    setGameState(prev => ({ ...prev, selectedTerritoryId: id }));
+  };
+
+  // Turn Management
+  const advanceTurn = () => {
+    setGameState(prev => {
+        const currentIdx = TURN_ORDER.indexOf(prev.activeSquadId);
+        const nextIdx = (currentIdx + 1) % TURN_ORDER.length;
+        const nextSquadId = TURN_ORDER[nextIdx];
+        
+        return {
+            ...prev,
+            activeSquadId: nextSquadId,
+            selectedTerritoryId: null, // Deselect on turn change
+            activeQuest: null
+        };
+    });
+  };
+
+  const getRequiredQuestionCount = (difficulty: number) => {
+    if (difficulty <= 2) return 3;
+    if (difficulty <= 4) return 5;
+    return 7;
+  };
+
+  // Adjacency Check logic for Hex Grids (Axial Coordinates)
+  const isAdjacentToOwned = (target: Territory): boolean => {
+      // Neighbors in Axial Coords
+      const directions = [
+          {q: 1, r: 0}, {q: 1, r: -1}, {q: 0, r: -1},
+          {q: -1, r: 0}, {q: -1, r: 1}, {q: 0, r: 1}
+      ];
+
+      // Find all territories owned by active squad
+      const ownedIds = gameState.territories
+        .filter(t => t.owner === gameState.activeSquadId)
+        .map(t => t.id);
+
+      // If no territories owned, you cannot use CQC (requires adjacency to owned land)
+      if (ownedIds.length === 0) return false;
+
+      // Check if target is neighbor to ANY owned territory
+      for (let ownedT of gameState.territories.filter(t => t.owner === gameState.activeSquadId)) {
+          for (let dir of directions) {
+              if (ownedT.q + dir.q === target.q && ownedT.r + dir.r === target.r) {
+                  return true;
+              }
+          }
+      }
+      return false;
+  };
+
+  // Teacher Functions
+  const handleAddCustomQuestion = (territoryId: string, question: Question) => {
+      setGameState(prev => ({
+          ...prev,
+          customQuestions: {
+              ...prev.customQuestions,
+              [territoryId]: [...(prev.customQuestions[territoryId] || []), question]
+          }
+      }));
+  };
+
+  const handleDeleteCustomQuestion = (territoryId: string, questionId: string) => {
+      setGameState(prev => ({
+          ...prev,
+          customQuestions: {
+              ...prev.customQuestions,
+              [territoryId]: (prev.customQuestions[territoryId] || []).filter(q => q.id !== questionId)
+          }
+      }));
+  };
+
+  const startQuest = async (type: 'CONQUEST' | 'BATTLE' | 'CQC') => {
+    if (!selectedTerritory) return;
+    
+    setLoadingQuest(true);
+    
+    let finalQuestions: Question[] = [];
+
+    if (type === 'CQC') {
+        // Generate Open Ended Questions
+        const cqcCount = 6; // 3 rounds each (3 for attacker, 3 for defender)
+        finalQuestions = await generateCQCQuestions(
+            selectedTerritory.name + ": " + selectedTerritory.description,
+            cqcCount
+        );
+    } else {
+        // Standard Conquest/Battle
+        const questionCount = getRequiredQuestionCount(selectedTerritory.difficulty);
+        const cachedQuestions = gameState.territoryQuestions[selectedTerritory.id];
+
+        if (cachedQuestions && cachedQuestions.length >= questionCount) {
+            finalQuestions = cachedQuestions.slice(0, questionCount);
+        } else {
+            const territoryCustomQs = gameState.customQuestions[selectedTerritory.id] || [];
+            const shuffledCustom = [...territoryCustomQs].sort(() => 0.5 - Math.random());
+            const customToUse = shuffledCustom.slice(0, questionCount);
+            
+            const neededFromAI = questionCount - customToUse.length;
+            let aiQuestions: Question[] = [];
+            
+            if (neededFromAI > 0) {
+                aiQuestions = await generateQuestQuestions(
+                selectedTerritory.name + ": " + selectedTerritory.description, 
+                selectedTerritory.difficulty, 
+                neededFromAI
+                );
+            }
+            finalQuestions = [...customToUse, ...aiQuestions];
+            
+            // Cache them if not CQC
+            setGameState(prev => ({
+                ...prev,
+                territoryQuestions: {
+                    ...prev.territoryQuestions,
+                    [selectedTerritory.id]: finalQuestions
+                }
+            }));
+        }
+    }
+
+    setGameState(prev => ({
+      ...prev,
+      currentView: 'QUEST',
+      activeQuest: {
+        territoryId: selectedTerritory.id,
+        questions: finalQuestions,
+        currentQuestionIndex: 0,
+        score: 0,
+        startTime: Date.now(),
+        type,
+        opponentScore: 0,
+        timeBonusAccumulated: 0,
+        cqcStats: type === 'CQC' ? {
+            attackerScore: 0,
+            defenderScore: 0,
+            defenderId: selectedTerritory.owner
+        } : undefined
+      }
+    }));
+    setLoadingQuest(false);
+  };
+
+  const handleQuestAnswer = (questionId: string, answerIndex: number, timeRemaining: number) => {
+     // This function is for standard Multiple Choice
+    if (!gameState.activeQuest) return;
+
+    const currentQ = gameState.activeQuest.questions[gameState.activeQuest.currentQuestionIndex];
+    const isCorrect = answerIndex === currentQ.correctAnswerIndex;
+    
+    if (!isCorrect) {
+        handleSuddenDeathFailure();
+        return;
+    }
+
+    const isLast = gameState.activeQuest.currentQuestionIndex >= gameState.activeQuest.questions.length - 1;
+
+    if (isLast) {
+       handleVictory();
+    } else {
+       setGameState(prev => ({
+         ...prev,
+         activeQuest: {
+           ...prev.activeQuest!,
+           score: prev.activeQuest!.score + 1,
+           currentQuestionIndex: prev.activeQuest!.currentQuestionIndex + 1
+         }
+       }));
+    }
+  };
+
+  const handleCQCVerdict = (winner: 'ATTACKER' | 'DEFENDER' | 'DRAW') => {
+      if (!gameState.activeQuest || gameState.activeQuest.type !== 'CQC' || !gameState.activeQuest.cqcStats) return;
+
+      const stats = gameState.activeQuest.cqcStats;
+      let newAttackerScore = stats.attackerScore;
+      let newDefenderScore = stats.defenderScore;
+
+      if (winner === 'ATTACKER') newAttackerScore++;
+      if (winner === 'DEFENDER') newDefenderScore++;
+
+      const isLast = gameState.activeQuest.currentQuestionIndex >= gameState.activeQuest.questions.length - 1;
+
+      if (isLast) {
+          // Determine Winner
+          if (newAttackerScore > newDefenderScore) {
+              handleVictory();
+          } else {
+              // Draw or Defender Win -> Defender keeps territory
+              handleDefeat(newDefenderScore > newAttackerScore ? "Defeated in Duel" : "Duel ended in Draw - Defender holds");
+          }
+      } else {
+          setGameState(prev => ({
+              ...prev,
+              activeQuest: {
+                  ...prev.activeQuest!,
+                  currentQuestionIndex: prev.activeQuest!.currentQuestionIndex + 1,
+                  cqcStats: {
+                      ...prev.activeQuest!.cqcStats!,
+                      attackerScore: newAttackerScore,
+                      defenderScore: newDefenderScore
+                  }
+              }
+          }));
+      }
+  };
+
+
+  const handleSuddenDeathFailure = () => {
+      setTimeout(() => {
+        handleDefeat("FAILED to secure sector");
+      }, 3000); 
+  };
+
+  const handleDefeat = (reason: string) => {
+        const sysMsg: ChatMessage = {
+            id: Date.now().toString(),
+            senderId: 'system',
+            senderName: 'HQ',
+            text: `${activeSquad.name} ${reason}. Turn passing...`,
+            timestamp: Date.now(),
+            isSystem: true
+        };
+        setChatHistory(prev => [sysMsg, ...prev]);
+        advanceTurn();
+  };
+
+  const handleVictory = () => {
+    if (!selectedTerritory) return;
+    
+    setTimeout(() => {
+        let newTerritories = gameState.territories.map(t => 
+            t.id === selectedTerritory.id 
+            ? { ...t, owner: gameState.activeSquadId }
+            : t
+        );
+        
+        const sysMsg: ChatMessage = {
+            id: Date.now().toString(),
+            senderId: 'system',
+            senderName: 'HQ',
+            text: `${activeSquad.name} CONQUERED ${selectedTerritory.name}!`,
+            timestamp: Date.now(),
+            isSystem: true
+        };
+        
+        setChatHistory(prev => [sysMsg, ...prev]);
+
+        setGameState(prev => {
+            const currentIdx = TURN_ORDER.indexOf(prev.activeSquadId);
+            const nextIdx = (currentIdx + 1) % TURN_ORDER.length;
+            
+            return {
+                ...prev,
+                territories: newTerritories,
+                squads: {
+                    ...prev.squads,
+                    [prev.activeSquadId]: {
+                        ...prev.squads[prev.activeSquadId],
+                        score: prev.squads[prev.activeSquadId].score + (selectedTerritory.difficulty * 100)
+                    }
+                },
+                activeSquadId: TURN_ORDER[nextIdx],
+                activeQuest: null,
+                selectedTerritoryId: null,
+                currentView: 'MAP'
+            };
+        });
+    }, 3000);
+  };
+
+  // Determine if CQC is allowed: Target is enemy owned AND adjacent to one of our territories
+  const canLaunchCQC = selectedTerritory && 
+                       selectedTerritory.owner !== SquadId.NEUTRAL && 
+                       selectedTerritory.owner !== gameState.activeSquadId && 
+                       isAdjacentToOwned(selectedTerritory);
+
+  return (
+    <div className="flex flex-col h-screen w-screen overflow-hidden text-slate-200 bg-slate-950 font-sans">
+        
+        {/* VIEW: TITLE SCREEN */}
+        {gameState.currentView === 'TITLE' ? (
+             <TitleScreen onStartGame={handleGameStart} />
+        ) : 
+        
+        /* VIEW: TEACHER DASHBOARD */
+        gameState.currentView === 'TEACHER' ? (
+             <TeacherDashboard 
+                territories={gameState.territories}
+                customQuestions={gameState.customQuestions}
+                onAddQuestion={handleAddCustomQuestion}
+                onDeleteQuestion={handleDeleteCustomQuestion}
+                onClose={() => setGameState(prev => ({ ...prev, currentView: 'MAP' }))}
+             />
+        ) : (
+        /* VIEW: MAIN GAME (MAP) */
+        <>
+        {/* Top Navigation Bar */}
+        <header className="h-20 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-10 relative shadow-lg">
+            <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded bg-yellow-600 flex items-center justify-center border border-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.3)]">
+                    <Star className="text-white w-6 h-6 fill-current" />
+                </div>
+                <div>
+                    <h1 className="text-2xl font-bold tracking-widest text-slate-100 font-serif">TOPIC<span className="text-yellow-500">CONQUEST</span></h1>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-[0.2em]">World War II Campaign</p>
+                </div>
+            </div>
+
+            {/* SQUAD SELECTOR (READ ONLY IN THIS MODE, SHOWS ACTIVE TURN) */}
+            <div className="flex items-center gap-4 bg-slate-950 p-2 rounded-xl border border-slate-800 shadow-inner">
+                {TURN_ORDER.map(squadId => {
+                    const squad = gameState.squads[squadId];
+                    const isActive = gameState.activeSquadId === squadId;
+                    return (
+                        <div key={squadId} className={`flex flex-col items-center transition-all duration-500 ${isActive ? 'scale-110 opacity-100' : 'opacity-40 scale-90'}`}>
+                            <div className="text-[9px] uppercase font-bold mb-1" style={{color: squad.color}}>{isActive ? 'CURRENT TURN' : ''}&nbsp;</div>
+                            <div 
+                                className={`px-4 py-2 rounded font-bold uppercase text-xs border-2 shadow-lg`}
+                                style={{
+                                    borderColor: squad.color,
+                                    backgroundColor: isActive ? squad.color : 'transparent',
+                                    color: isActive ? '#fff' : squad.color
+                                }}
+                            >
+                                {squad.name}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+            
+            <div className="flex items-center gap-6">
+                 {/* Teacher Mode Button */}
+                 <button 
+                    onClick={() => setGameState(prev => ({ ...prev, currentView: 'TEACHER' }))}
+                    className="p-3 text-slate-400 hover:text-yellow-500 transition-colors border border-transparent hover:border-slate-700 rounded-lg hover:bg-slate-800"
+                    title="Teacher Dashboard"
+                 >
+                    <GraduationCap className="w-6 h-6" />
+                 </button>
+            </div>
+        </header>
+
+        {/* Main Game Area */}
+        <main className="flex-1 flex overflow-hidden relative">
+            
+            {/* Map Container */}
+            <div className="flex-1 relative bg-[#0a0a0a] flex flex-col">
+                <HexMap 
+                    territories={gameState.territories} 
+                    onTerritoryClick={handleTerritoryClick}
+                    selectedTerritoryId={gameState.selectedTerritoryId}
+                    activeSquadId={gameState.activeSquadId}
+                />
+
+                {/* Territory Interaction Modal */}
+                {selectedTerritory && (
+                    <div className="absolute top-4 right-4 md:right-auto md:left-4 w-80 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded shadow-2xl animate-slide-in p-0 overflow-hidden">
+                        <div className="h-2 w-full" style={{ backgroundColor: SQUADS[selectedTerritory.owner].color }}></div>
+                        
+                        <div className="p-6">
+                            <div className="flex justify-between items-start mb-3">
+                                <div>
+                                    <h3 className="font-bold text-xl text-white leading-tight font-serif">{selectedTerritory.name}</h3>
+                                    <span className="text-[10px] uppercase text-slate-500 tracking-widest font-bold">Sector {selectedTerritory.id.toUpperCase()}</span>
+                                </div>
+                                <button onClick={() => setGameState(prev => ({...prev, selectedTerritoryId: null}))} className="text-slate-400 hover:text-white"><MapIcon className="w-5 h-5" /></button>
+                            </div>
+                            
+                            <div className="text-sm text-slate-400 mb-5 border-l-2 border-slate-700 pl-3 italic">
+                                "{selectedTerritory.description}"
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-3 mb-5">
+                                <div className="bg-slate-800 p-2 rounded text-center border border-slate-700">
+                                    <div className="text-[9px] uppercase text-slate-500 font-bold">Difficulty</div>
+                                    <div className="flex justify-center mt-1">
+                                        {Array(5).fill(0).map((_, i) => (
+                                            <div key={i} className={`w-1.5 h-3 mx-0.5 rounded-sm ${i < selectedTerritory.difficulty ? 'bg-red-500' : 'bg-slate-700'}`}></div>
+                                        ))}
+                                    </div>
+                                    <div className="text-[10px] text-white font-bold mt-1">
+                                        Needs {getRequiredQuestionCount(selectedTerritory.difficulty)} Correct
+                                    </div>
+                                </div>
+                                <div className="bg-slate-800 p-2 rounded text-center border border-slate-700">
+                                    <div className="text-[9px] uppercase text-slate-500 font-bold">Control</div>
+                                    <div className="text-xs font-bold truncate mt-1 flex items-center justify-center gap-1" style={{ color: SQUADS[selectedTerritory.owner].color }}>
+                                        <div className="w-2 h-2 rounded-full" style={{backgroundColor: SQUADS[selectedTerritory.owner].color}}></div>
+                                        {SQUADS[selectedTerritory.owner].name}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                {selectedTerritory.owner === SquadId.NEUTRAL ? (
+                                    <button 
+                                        onClick={() => startQuest('CONQUEST')}
+                                        className={`w-full py-4 rounded font-bold uppercase tracking-widest text-sm shadow-lg transition-all duration-300 flex items-center justify-center gap-2 bg-yellow-600 hover:bg-yellow-500 text-white shadow-yellow-900/20`}
+                                    >
+                                    <Swords className="w-5 h-5" /> Launch Assault
+                                    </button>
+                                ) : (
+                                    <>
+                                        {/* CQC Button - Available if adjacent to owned land and enemy controlled */}
+                                        {canLaunchCQC && (
+                                            <button 
+                                                onClick={() => startQuest('CQC')}
+                                                className={`w-full py-3 rounded font-bold uppercase tracking-widest text-xs shadow-lg transition-all duration-300 flex items-center justify-center gap-2 bg-blue-700 hover:bg-blue-600 text-white animate-pulse border border-blue-400`}
+                                            >
+                                                <Gavel className="w-4 h-4" /> Start Duel (CQC)
+                                            </button>
+                                        )}
+                                        
+                                        {/* Already owned by active squad */}
+                                        {selectedTerritory.owner === gameState.activeSquadId && (
+                                            <div className="bg-slate-800 p-3 text-center text-xs text-slate-400 rounded border border-slate-700 font-mono">
+                                                STATUS: SECURE
+                                            </div>
+                                        )}
+
+                                        {/* Enemy owned but not adjacent */}
+                                        {selectedTerritory.owner !== gameState.activeSquadId && !canLaunchCQC && (
+                                            <div className="bg-slate-800 p-3 text-center text-xs text-red-400 rounded border border-slate-700/50 flex flex-col gap-1">
+                                                <span className="font-bold uppercase">Attack Unavailable</span>
+                                                <span className="text-[9px] text-slate-500">Requires adjacent territory for Close Quarter Combat</span>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </main>
+
+        {/* Quest/Battle Modal */}
+        {(gameState.currentView === 'QUEST' && gameState.activeQuest) || loadingQuest ? (
+            <QuestModal 
+                quest={gameState.activeQuest}
+                gems={gameState.gems}
+                isLoading={loadingQuest}
+                onAnswer={handleQuestAnswer}
+                onCQCVerdict={handleCQCVerdict}
+                onUseGem={() => {}}
+                activeSquadId={gameState.activeSquadId}
+            />
+        ) : null}
+        </>
+        )}
+    </div>
+  );
+}
