@@ -1,0 +1,111 @@
+import React, { useState } from 'react';
+import { SquadId } from '../types';
+import { SQUADS } from '../constants';
+import { Shield, ChevronRight, Play } from 'lucide-react';
+
+interface TitleScreenProps {
+  onStartGame: (squadId: SquadId) => void;
+}
+
+export const TitleScreen: React.FC<TitleScreenProps> = ({ onStartGame }) => {
+  const [step, setStep] = useState<'START' | 'SELECT'>('START');
+  const [selectedSquad, setSelectedSquad] = useState<SquadId | null>(null);
+
+  const handleSquadSelect = (squadId: SquadId) => {
+    setSelectedSquad(squadId);
+  };
+
+  const handleConfirm = () => {
+    if (selectedSquad) {
+      onStartGame(selectedSquad);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-950 flex flex-col items-center justify-center z-50 overflow-hidden text-slate-200">
+      {/* Background Ambience */}
+      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/aged-paper.png')] opacity-5 pointer-events-none"></div>
+      <div className="absolute inset-0 bg-gradient-to-b from-slate-900/50 via-slate-900/80 to-slate-950 pointer-events-none"></div>
+
+      <div className="relative z-10 flex flex-col items-center max-w-4xl w-full px-6 text-center">
+        
+        {/* Logo / Title */}
+        <div className="mb-12 animate-in fade-in slide-in-from-top-10 duration-1000">
+          <div className="flex items-center justify-center gap-4 mb-4">
+            <Shield className="w-12 h-12 text-yellow-600 fill-current animate-pulse" />
+          </div>
+          <h1 className="text-5xl md:text-7xl font-black tracking-widest text-slate-100 font-serif drop-shadow-2xl mb-2">
+            TOPIC<span className="text-yellow-500">CONQUEST</span>
+          </h1>
+          <p className="text-sm md:text-lg text-slate-400 uppercase tracking-[0.3em] font-bold">World War II Campaign</p>
+        </div>
+
+        {step === 'START' ? (
+          <div className="animate-in fade-in zoom-in-95 duration-1000 delay-300">
+            <button
+              onClick={() => setStep('SELECT')}
+              className="group relative px-8 py-4 bg-slate-100 text-slate-900 font-black text-xl tracking-widest uppercase hover:bg-yellow-500 transition-all duration-300 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_30px_rgba(234,179,8,0.4)] clip-path-slant"
+            >
+              <span className="flex items-center gap-3">
+                Begin Operation <ChevronRight className="w-6 h-6 group-hover:translate-x-1 transition-transform" />
+              </span>
+            </button>
+            <p className="mt-6 text-slate-500 text-xs font-mono">SECURE CONNECTION ESTABLISHED</p>
+          </div>
+        ) : (
+          <div className="w-full animate-in fade-in slide-in-from-bottom-10 duration-500">
+            <h2 className="text-2xl font-bold text-white mb-8 uppercase tracking-widest">Select Your Allegiance</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+              {[SquadId.ALPHA, SquadId.BRAVO, SquadId.CHARLIE].map((squadId) => {
+                const squad = SQUADS[squadId];
+                const isSelected = selectedSquad === squadId;
+                
+                return (
+                  <button
+                    key={squadId}
+                    onClick={() => handleSquadSelect(squadId)}
+                    className={`relative p-6 rounded-lg border-2 transition-all duration-300 flex flex-col items-center group
+                      ${isSelected 
+                        ? 'bg-slate-800 border-white scale-105 shadow-[0_0_30px_rgba(255,255,255,0.1)]' 
+                        : 'bg-slate-900 border-slate-700 hover:border-slate-500 hover:bg-slate-800'
+                      }`}
+                  >
+                    <div 
+                      className={`w-16 h-16 rounded-full mb-4 flex items-center justify-center shadow-lg transition-transform duration-300 ${isSelected ? 'scale-110' : ''}`}
+                      style={{ backgroundColor: squad.color }}
+                    >
+                      <Shield className="w-8 h-8 text-white fill-current" />
+                    </div>
+                    
+                    <h3 className="text-xl font-bold text-white mb-2">{squad.name}</h3>
+                    
+                    {isSelected && (
+                      <div className="absolute top-2 right-2 w-3 h-3 bg-green-500 rounded-full shadow-[0_0_10px_#22c55e] animate-ping" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={handleConfirm}
+              disabled={!selectedSquad}
+              className={`px-8 py-3 font-bold text-lg uppercase tracking-wider transition-all duration-300 flex items-center gap-2 mx-auto rounded
+                ${selectedSquad 
+                  ? 'bg-yellow-600 text-white hover:bg-yellow-500 shadow-lg cursor-pointer transform hover:-translate-y-1' 
+                  : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                }`}
+            >
+              Deploy Squadron <Play className="w-4 h-4 fill-current" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="absolute bottom-4 text-slate-600 text-[10px] uppercase tracking-widest font-mono">
+        v2.2 | System Ready
+      </div>
+    </div>
+  );
+};
